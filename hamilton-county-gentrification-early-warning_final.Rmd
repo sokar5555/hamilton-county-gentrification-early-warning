@@ -1,8 +1,14 @@
 ---
 title: "Demographic Displacement & Gentrification Early-Warning System"
 author: "Enrique Rosen"
-date: "2026-09-22"
-output: html_document
+date: "2026-11-24"
+output:
+  html_document:
+    theme: flatly
+    toc: true
+    toc_float: true
+    code_folding: hide
+    df_print: paged
 ---
 
 ```{r setup, include=FALSE}
@@ -20,7 +26,7 @@ packages <- c("tidycensus", "tidyverse", "sf", "reticulate", "spdep", "tmap", "k
 # Install any missing R packages
 new_packages <- packages[!(packages %in% installed.packages()[, "Package"])]
 if (length(new_packages) > 0) {
-  install.packages(new_packages)
+  install.packages(new_packages, type = "binary")
 }
 
 # Load libraries
@@ -37,23 +43,25 @@ dir.create("figures", showWarnings = FALSE)
 
 With the package dependencies loaded, the Census API key confirmed, and the `figures/` directory in place, the workspace is ready for data ingestion.
 
-# 2. Census Data Pipeline & Boundary Harmonization (2010 -> 2020 Tracts)
+# 2. Census Data Pipeline & Boundary Harmonization (2010 $\rightarrow$ 2020 Tracts)
 
-Next, American Community Survey (ACS) 5-year estimates are pulled for Hamilton County across two periods: a 2010–2014 baseline and a 2018–2022 evaluation window. Because Census tract boundaries shift between decennial censuses, the 2010-vintage tract figures are apportioned into 2020 tract geometries using Ohio's Census relationship crosswalk and adjusted to constant 2022 dollars via a `1.258` CPI-U deflator, while unpopulated tracts (`<= 50` residents) are filtered out.
+Next, American Community Survey (ACS) 5-year estimates are pulled for Hamilton County across two non-overlapping periods: a 2010–2014 baseline and a 2018–2022 evaluation window. Alongside standard demographic and housing-cost indicators, occupancy counts (`B25003_001` and `B25003_003`) are retrieved to compute **renter-occupied share** (the proportion of occupied homes rented rather than owned, indicating how exposed local households are to rent increases), while total housing counts (`B25001_001`) are kept to calculate baseline **vacancy rate** (the share of unoccupied units), baseline housing density, and post-hoc housing unit additions. Because Census tract lines shift between decennial censuses, 2010-vintage figures are apportioned into 2020 tract geometries using Ohio's land-area overlap crosswalk and adjusted to constant 2022 dollars with a `1.258` CPI-U inflation factor, while unpopulated tracts ($\le 50$ residents) are filtered out.
 
 ```{r census-pipeline}
 # Define ACS 5-year indicators across baseline (2010-2014) and evaluation (2018-2022)
 variables_to_pull <- c(
-  med_inc        = "B19013_001", # Median Household Income
-  med_gross_rent = "B25064_001", # Median Gross Rent
-  med_home_val   = "B25077_001", # Median Home Value
-  total_pop      = "B01003_001", # Total Population
-  pop_bachelors  = "B15003_022", # Bachelor's Degree
-  pop_masters    = "B15003_023", # Master's Degree
-  pop_phd        = "B15003_025", # Doctorate Degree
-  pop_white      = "B02001_002", # White alone
-  housing_units  = "B25001_001", # Total housing units
-  vacant_units   = "B25002_003"  # Vacant housing units
+  med_inc           = "B19013_001", # Median Household Income
+  med_gross_rent    = "B25064_001", # Median Gross Rent
+  med_home_val      = "B25077_001", # Median Home Value
+  total_pop         = "B01003_001", # Total Population
+  pop_bachelors     = "B15003_022", # Bachelor's Degree
+  pop_masters       = "B15003_023", # Master's Degree
+  pop_phd           = "B15003_025", # Doctorate Degree
+  pop_white         = "B02001_002", # White alone
+  housing_units     = "B25001_001", # Total housing units
+  vacant_units      = "B25002_003", # Vacant housing units
+  occ_housing_units = "B25003_001", # Total occupied housing units (tenure denominator)
+  renter_units      = "B25003_003"  # Renter-occupied housing units
 )
 
 # Pull 2010-2014 baseline (tabular only; 2010 boundaries will be harmonized to 2020)
@@ -111,20 +119,28 @@ cpi_factor_2014_to_2022 <- 1.258
 df_2014_harmonized <- df_2014_raw %>%
   inner_join(cw_hamilton, by = c("GEOID" = "GEOID_10")) %>%
   mutate(
-    adj_pop_bachelors = pop_bachelorsE * weight,
-    adj_pop_masters   = pop_mastersE   * weight,
-    adj_pop_phd       = pop_phdE       * weight,
-    adj_pop_white     = pop_whiteE     * weight,
-    adj_total_pop     = total_popE     * weight,
-    adj_housing_units = housing_unitsE * weight,
-    adj_vacant_units  = vacant_unitsE  * weight
+    adj_pop_bachelors = pop_bachelorsE     * weight,
+    adj_pop_masters   = pop_mastersE       * weight,
+    adj_pop_phd       = pop_phdE           * weight,
+    adj_pop_white     = pop_whiteE         * weight,
+    adj_total_pop     = total_popE         * weight,
+    adj_housing_units = housing_unitsE     * weight,
+    adj_vacant_units  = vacant_unitsE      * weight,
+    adj_occ_units     = occ_housing_unitsE * weight,
+    adj_renter_units  = renter_unitsE      * weight
   ) %>%
   group_by(GEOID_20) %>%
   summarize(
     total_pop_14              = sum(adj_total_pop, na.rm = TRUE),
+    housing_units_14          = sum(adj_housing_units, na.rm = TRUE),
     college_educated_share_14 = sum(adj_pop_bachelors + adj_pop_masters + adj_pop_phd, na.rm = TRUE) / total_pop_14,
     pct_white_14              = sum(adj_pop_white, na.rm = TRUE) / total_pop_14,
-    vacancy_rate_14           = sum(adj_vacant_units, na.rm = TRUE) / sum(adj_housing_units, na.rm = TRUE),
+    vacancy_rate_14           = sum(adj_vacant_units, na.rm = TRUE) / housing_units_14,
+    renter_share_14           = if_else(
+      sum(adj_occ_units, na.rm = TRUE) > 0,
+      sum(adj_renter_units, na.rm = TRUE) / sum(adj_occ_units, na.rm = TRUE),
+      NA_real_
+    ),
     adj_med_rent_14           = weighted.mean(med_gross_rentE * cpi_factor_2014_to_2022, w = adj_total_pop, na.rm = TRUE),
     adj_med_inc_14            = weighted.mean(med_incE * cpi_factor_2014_to_2022, w = adj_total_pop, na.rm = TRUE),
     adj_med_home_val_14       = weighted.mean(med_home_valE * cpi_factor_2014_to_2022, w = adj_total_pop, na.rm = TRUE),
@@ -135,35 +151,39 @@ df_2014_harmonized <- df_2014_raw %>%
 df_clean_eval <- df_2022_raw %>%
   mutate(
     total_pop_22              = total_popE,
+    housing_units_22          = housing_unitsE,
     college_educated_share_22 = (pop_bachelorsE + pop_mastersE + pop_phdE) / total_popE,
     pct_white_22              = pop_whiteE / total_popE,
     vacancy_rate_22           = vacant_unitsE / housing_unitsE,
+    renter_share_22           = if_else(occ_housing_unitsE > 0, renter_unitsE / occ_housing_unitsE, NA_real_),
     adj_med_rent_22           = med_gross_rentE,
     adj_med_inc_22            = med_incE,
     adj_med_home_val_22       = med_home_valE
   ) %>%
   select(
-    GEOID, NAME, geometry, total_pop_22,
-    college_educated_share_22, pct_white_22, vacancy_rate_22,
+    GEOID, NAME, geometry, total_pop_22, housing_units_22,
+    college_educated_share_22, pct_white_22, vacancy_rate_22, renter_share_22,
     adj_med_rent_22, adj_med_inc_22, adj_med_home_val_22
   )
 
 # Join harmonized 2014 baseline with 2022 evaluation panel and drop unpopulated industrial/riverfront tracts
 panel_df_harmonized <- inner_join(df_clean_eval, df_2014_harmonized, by = c("GEOID" = "GEOID_20")) %>%
-  filter(total_pop_14 > 50, total_pop_22 > 50) %>%
+  filter(total_pop_14 > 50, total_pop_22 > 50, housing_units_14 > 0, housing_units_22 > 0) %>%
   mutate(across(
     where(is.numeric),
-    ~ if_else(is.na(.x) | is.nan(.x), median(.x, na.rm = TRUE), .x)
+    ~ if_else(is.na(.x) | is.nan(.x) | is.infinite(.x), median(.x[is.finite(.x)], na.rm = TRUE), .x)
   ))
 
 glimpse(panel_df_harmonized)
 ```
 
-A harmonized spatial panel of populated 2020 Hamilton County census tracts is produced, pairing inflation-adjusted 2014 baseline indicators with 2022 evaluation metrics and median-imputed missing values so that longitudinal comparisons are anchored to consistent geographic boundaries.
+A harmonized spatial panel of `r nrow(panel_df_harmonized)` populated 2020 Hamilton County census tracts is produced, pairing inflation-adjusted 2014 baseline indicators—including renter share and housing stock—with 2022 evaluation metrics and median-imputed missing values.
 
 # 3. Spatial Feature Engineering & Target Definition (`spdep`)
 
-In the next step, a row-standardized Queen-contiguity spatial weights matrix is constructed to capture neighboring tract conditions (`lag_*_14`) and local housing/income gaps (`rent_gap_14`, `inc_gap_14`, `home_val_gap_14`) strictly from 2014 baseline figures so no future information leaks into the predictors. A binary gentrification target label (`gentrified_target`) is then derived from 2014–2022 changes among lower- and moderate-income baseline tracts, and tract geometries are stripped into `model_df` for Python modeling.
+In the next step, spatial context features are engineered strictly from 2014 baseline values so no future information leaks into the model. First, **housing density** (`housing_density_14`, total housing units per $\text{km}^2$) is derived to separate dense multi-family urban corridors from lower-density suburban tracts. A row-standardized **Queen-contiguity** neighbor graph is then built—linking every tract to adjacent tracts that share a border or corner—to calculate **spatial lags** (`lag_*_14`), which are simply the average 2014 values across a tract's immediate neighbors. From those neighbor averages, three spillover measures are derived by subtracting the local tract's value from its surrounding average: the **spatial rent gap** (`rent_gap_14`), **spatial income gap** (`inc_gap_14`), and **spatial home-value gap** (`home_val_gap_14`). Positive gap values indicate that surrounding neighborhoods are pricier or more affluent than the local tract (pointing to outward market pressure), while negative values indicate the tract already sits above its immediate neighbors.
+
+Separately, 2014–2022 outcome deltas are computed strictly outside the predictor set to construct `gentrified_target` among lower- and moderate-income tracts, alongside post-hoc **net housing unit change** (`net_unit_change`, `pct_chg_units`, and `supply_profile`) so rising rents on flat housing stock can later be distinguished from major infill apartment construction. Finally, tract geometries are dropped into `model_df` for Python modeling.
 
 ```{r spatial-features}
 panel_spatial <- panel_df_harmonized %>%
@@ -175,22 +195,35 @@ lw_queen <- nb2listw(nb_queen, style = "W", zero.policy = TRUE)
 
 panel_features <- panel_spatial %>%
   mutate(
+    # Baseline urban density (2014 housing units per square kilometer)
+    area_sqkm          = as.numeric(st_area(geometry)) / 1e6,
+    housing_density_14 = housing_units_14 / pmax(area_sqkm, 0.01),
+
     # 1. 2014 Spatial Spillover Lags (neighboring tract averages - strictly baseline to prevent leakage)
-    lag_inc_14      = lag.listw(lw_queen, adj_med_inc_14, zero.policy = TRUE),
-    lag_rent_14     = lag.listw(lw_queen, adj_med_rent_14, zero.policy = TRUE),
-    lag_home_val_14 = lag.listw(lw_queen, adj_med_home_val_14, zero.policy = TRUE),
-    lag_edu_14      = lag.listw(lw_queen, college_educated_share_14, zero.policy = TRUE),
-    lag_vacancy_14  = lag.listw(lw_queen, vacancy_rate_14, zero.policy = TRUE),
+    lag_inc_14          = lag.listw(lw_queen, adj_med_inc_14, zero.policy = TRUE),
+    lag_rent_14         = lag.listw(lw_queen, adj_med_rent_14, zero.policy = TRUE),
+    lag_home_val_14     = lag.listw(lw_queen, adj_med_home_val_14, zero.policy = TRUE),
+    lag_edu_14          = lag.listw(lw_queen, college_educated_share_14, zero.policy = TRUE),
+    lag_vacancy_14      = lag.listw(lw_queen, vacancy_rate_14, zero.policy = TRUE),
+    lag_renter_share_14 = lag.listw(lw_queen, renter_share_14, zero.policy = TRUE),
+    lag_density_14      = lag.listw(lw_queen, housing_density_14, zero.policy = TRUE),
 
     # 2. Spatial Rent, Income & Home-Value Gaps (surrounding pressure minus local baseline)
     rent_gap_14     = lag_rent_14 - adj_med_rent_14,
     inc_gap_14      = lag_inc_14 - adj_med_inc_14,
     home_val_gap_14 = lag_home_val_14 - adj_med_home_val_14,
 
-    # 3. 2014 -> 2022 Outcome Deltas (used ONLY to construct ground-truth target label)
+    # 3. 2014 -> 2022 Outcome & Supply Deltas (strictly EXCLUDED from LightGBM predictors)
     delta_edu        = college_educated_share_22 - college_educated_share_14,
     pct_chg_rent     = (adj_med_rent_22 - adj_med_rent_14) / adj_med_rent_14,
     pct_chg_home_val = (adj_med_home_val_22 - adj_med_home_val_14) / adj_med_home_val_14,
+    net_unit_change  = housing_units_22 - housing_units_14,
+    pct_chg_units    = (housing_units_22 - housing_units_14) / housing_units_14,
+    supply_profile   = case_when(
+      pct_chg_units >= 0.15  ~ "Supply-Driven Infill (+15%+)",
+      pct_chg_units <= -0.05 ~ "Stock Contraction (-5%+)",
+      TRUE                   ~ "Stable Stock"
+    ),
 
     # Target: Lower/moderate-income baseline (<75th pct) + top-30% education jump + above-median housing cost growth
     eligible_14 = adj_med_inc_14 < quantile(adj_med_inc_14, 0.75, na.rm = TRUE),
@@ -212,39 +245,45 @@ model_df <- panel_features %>%
   st_drop_geometry()
 ```
 
-Neighbor-lagged baseline indicators, spatial pressure gaps, and ground-truth gentrification labels are computed across all populated tracts, yielding a leakage-free tabular modeling dataset (`model_df`) ready for handoff to Python.
+Neighbor-lagged baseline indicators, spatial spillover gaps, baseline renter share, housing density, and post-hoc net unit-change diagnostics are computed across all `r nrow(panel_features)` populated tracts (`r sum(panel_features$gentrified_target)` labeled as gentrified between 2014 and 2022), yielding a leakage-free tabular modeling dataset (`model_df`) ready for handoff to Python.
 
 # 4. LightGBM Modeling & Out-of-Fold SHAP Attribution (`reticulate`)
 
-First, required Python packages (`lightgbm`, `shap`, `scikit-learn`, `matplotlib`, `pandas`, `numpy`) are checked and installed if missing inside the active `reticulate` environment.
-
+First, required Python modules (`lightgbm`, `shap`, `sklearn`, `matplotlib`, `pandas`, `numpy`) are verified inside the active `reticulate` environment. Using the Python import name `sklearn` avoids unnecessary `pip` calls during knitting.
 
 ```{r python-env-setup}
 # Verify required Python modules are available (import name for scikit-learn is "sklearn")
 py_modules <- c("lightgbm", "shap", "sklearn", "matplotlib", "pandas", "numpy")
 missing_py <- py_modules[!vapply(py_modules, py_module_available, logical(1))]
 if (length(missing_py) > 0) {
-  stop("Missing Python modules: ", paste(missing_py, collapse = ", "),
-       ". Install them once via terminal using pip before knitting.")
+  stop(
+    "Missing Python modules: ", paste(missing_py, collapse = ", "),
+    ". Install them once via terminal with `pip install -r requirements.txt` before knitting."
+  )
 }
 ```
 
-
 The Python environment is verified and ready to execute the gradient-boosted classification workflow.
 
-Next, a regularized `LightGBM` binary classifier is trained and evaluated on the 2014 baseline and spatial spillover features using 10x5 Repeated Stratified K-Fold cross-validation. Out-of-fold probability predictions and SHAP values are aggregated across repeats, ROC-AUC and PR-AUC scores are printed, and a SHAP summary chart is exported to `figures/shap_summary.png`.
+Next, a regularized `LightGBM` binary classifier is trained and evaluated on the 18 leakage-free 2014 baseline and spatial spillover features—incorporating renter share and housing density while keeping `net_unit_change` strictly excluded—using $10 \times 5$ Repeated Stratified K-Fold cross-validation. Out-of-fold probability predictions and **SHAP values** (which quantify how much each feature pushes an individual tract's predicted risk higher or lower) are aggregated across repeats, ROC-AUC and PR-AUC scores are printed, and a SHAP summary chart is exported to `figures/shap_summary.png`.
 
 ```{python lightgbm-shap}
+import os
+os.environ["OMP_NUM_THREADS"] = "1"
+
 import numpy as np
 import pandas as pd
 import lightgbm as lgb
 import shap
+import matplotlib
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from sklearn.model_selection import RepeatedStratifiedKFold
 from sklearn.metrics import roc_auc_score, average_precision_score
 
 df = r.model_df.copy()
 
+# Strictly 2014 baseline and spatial spillover predictors (no 2022 outcome or unit-addition features)
 feature_cols = [
     "adj_med_inc_14",
     "adj_med_rent_14",
@@ -252,11 +291,15 @@ feature_cols = [
     "college_educated_share_14",
     "pct_white_14",
     "vacancy_rate_14",
+    "renter_share_14",
+    "housing_density_14",
     "lag_inc_14",
     "lag_rent_14",
     "lag_home_val_14",
     "lag_edu_14",
     "lag_vacancy_14",
+    "lag_renter_share_14",
+    "lag_density_14",
     "rent_gap_14",
     "inc_gap_14",
     "home_val_gap_14",
@@ -288,6 +331,7 @@ lgb_params = {
     "reg_alpha": 0.5,
     "reg_lambda": 1.0,
     "class_weight": "balanced",
+    "n_jobs": 1,
     "random_state": 42,
     "verbose": -1,
 }
@@ -309,9 +353,11 @@ for train_idx, val_idx in rskf.split(X, y):
         sv = sv[:, :, 1]
     oof_shap[val_idx] += sv / n_repeats
 
-roc_auc = roc_auc_score(y, oof_preds)
-pr_auc = average_precision_score(y, oof_preds)
-print(f"Out-of-Fold ROC-AUC: {roc_auc:.3f} | PR-AUC: {pr_auc:.3f} (Baseline Positive Rate: {y.mean():.3f})")
+roc_auc = float(roc_auc_score(y, oof_preds))
+pr_auc = float(average_precision_score(y, oof_preds))
+baseline_rate = float(y.mean())
+pr_lift = pr_auc / baseline_rate
+print(f"Out-of-Fold ROC-AUC: {roc_auc:.3f} | PR-AUC: {pr_auc:.3f} (Baseline Positive Rate: {baseline_rate:.3f} | Lift: {pr_lift:.2f}x)")
 
 # Export publication-ready out-of-fold SHAP summary plot
 pretty_names = {
@@ -321,11 +367,15 @@ pretty_names = {
     "college_educated_share_14": "College-Educated Share (2014)",
     "pct_white_14": "White Population Share (2014)",
     "vacancy_rate_14": "Housing Vacancy Rate (2014)",
+    "renter_share_14": "Renter-Occupied Share (2014)",
+    "housing_density_14": "Housing Density per sq km (2014)",
     "lag_inc_14": "Neighbor Avg Income (2014)",
     "lag_rent_14": "Neighbor Avg Rent (2014)",
     "lag_home_val_14": "Neighbor Avg Home Value (2014)",
     "lag_edu_14": "Neighbor College Share (2014)",
     "lag_vacancy_14": "Neighbor Vacancy Rate (2014)",
+    "lag_renter_share_14": "Neighbor Renter Share (2014)",
+    "lag_density_14": "Neighbor Housing Density (2014)",
     "rent_gap_14": "Spatial Rent Gap (Neighbor - Local)",
     "inc_gap_14": "Spatial Income Gap (Neighbor - Local)",
     "home_val_gap_14": "Spatial Home Value Gap (Neighbor - Local)",
@@ -333,90 +383,131 @@ pretty_names = {
 
 X_display = X.rename(columns=pretty_names)
 
-plt.figure(figsize=(9, 6))
+plt.figure(figsize=(9, 6.8))
 shap.summary_plot(oof_shap, X_display, show=False)
-plt.title("SHAP Feature Attribution: Hamilton County Displacement Risk", fontsize=12, pad=12)
+plt.title("SHAP Feature Attribution: Hamilton County Displacement Risk (v2)", fontsize=12, pad=12)
 plt.tight_layout()
 plt.savefig("figures/shap_summary.png", dpi=300, bbox_inches="tight")
-plt.show()
 plt.close()
 ```
 
-Out-of-fold probability estimates (`oof_preds`) and SHAP attributions are generated and exported to `figures/shap_summary.png`. As shown in the SHAP summary plot, **Median Income (2014)** is the single strongest driver of predicted risk: affluent tracts are pushed sharply downward (SHAP values below `-1.0`), whereas lower- and moderate-income tracts are pushed upward. Immediately beneath income, **Neighbor Vacancy Rate (2014)**, **Median Home Value (2014)**, and **Housing Vacancy Rate (2014)** stand out as the dominant upward signals—elevated local and surrounding vacancy rates consistently raise predicted risk, while higher **Neighbor Avg Home Value (2014)** adds positive spillover pressure from adjacent higher-value neighborhoods. By contrast, explicit pairwise gap terms (`Spatial Income Gap`, `Spatial Home Value Gap`) contribute smaller incremental adjustments once the raw baseline and neighbor-average features are accounted for.
+```{r display-shap, echo=FALSE, out.width="95%"}
+knitr::include_graphics("figures/shap_summary.png")
+```
 
-# 5. Spatial Risk Map & Top-Tract Diagnostics (`tmap`)
+Across the $10 \times 5$ repeated cross-validation folds, the v2 model achieves an out-of-fold **ROC-AUC of `r sprintf("%.3f", py$roc_auc)`** and a **PR-AUC of `r sprintf("%.3f", py$pr_auc)`** against a **`r sprintf("%.3f", py$baseline_rate)`** baseline positive rate (a **`r sprintf("%.2f", py$pr_lift)`**$\times$ **lift** over random ranking). As shown in `figures/shap_summary.png`, **Median Income (2014)** remains the primary eligibility boundary pushing affluent suburban tracts sharply downward, while neighborhood spillover signals—led by **Neighbor Vacancy Rate (2014)**, **Neighbor Avg Home Value (2014)**, and local/neighboring **Renter-Occupied Share (2014)** and **Housing Density (2014)**—capture urban-core tenant exposure and redevelopment pressure.
 
-Finally, out-of-fold predicted risk probabilities from Python are joined back onto the 2020 Hamilton County tract polygons to produce a static quantile choropleth map (`figures/hamilton_county_risk_map.png`) and a summary table of the top 10 highest-risk tracts.
+# 5. Spatial Risk Map & Top-Tract Supply Diagnostics (`tmap`)
+
+Finally, out-of-fold predicted risk probabilities from Python are joined back onto the 2020 Hamilton County tract polygons. Missing risk scores are explicitly audited to confirm full scoring coverage across all populated tracts, missing-value legend swatches are suppressed so no unused `"Missing"` category appears, a static quantile choropleth map is exported to `figures/hamilton_county_risk_map.png`, and the top 10 highest-risk tracts are tabulated alongside their baseline renter share, spatial rent gap, and 2014–2022 net housing unit change.
 
 ```{r spatial-risk-map}
 # Attach out-of-fold predicted probabilities back to spatial sf dataframe
 panel_results <- panel_features %>%
-  mutate(displacement_risk = py$oof_preds)
+  mutate(displacement_risk = as.numeric(py$oof_preds))
 
-# Render static choropleth map (avoids servr/xfun interactive viewer conflicts)
+# Audit missingness explicitly (every populated tract should receive an out-of-fold score)
+missing_scores <- sum(is.na(panel_results$displacement_risk))
+cat("Populated tracts with missing predicted risk scores:", missing_scores, "\n")
+
+# Render static choropleth map with missing-value legend item explicitly suppressed
 tmap_mode("plot")
 
-risk_map <- tm_shape(panel_results) +
-  tm_fill(
-    col = "displacement_risk",
-    palette = "YlOrRd",
-    style = "quantile",
-    n = 5,
-    title = "Predicted Risk Score\n(Out-of-Fold Probability)"
-  ) +
-  tm_borders(col = "gray40", lwd = 0.5) +
-  tm_layout(
-    main.title = "Hamilton County Gentrification & Displacement Early-Warning Risk",
-    main.title.size = 1.05,
-    legend.outside = TRUE,
-    frame = FALSE
-  )
+if (packageVersion("tmap") >= "4.0") {
+  risk_map <- tm_shape(panel_results) +
+    tm_polygons(
+      fill = "displacement_risk",
+      fill.scale = tm_scale_intervals(
+        style = "quantile",
+        n = 5,
+        values = "brewer.yl_or_rd"
+      ),
+      fill.legend = tm_legend(
+        title = "Predicted Risk Score\n(Out-of-Fold Probability)",
+        na.show = FALSE
+      ),
+      col = "gray40",
+      lwd = 0.5
+    ) +
+    tm_title("Hamilton County Gentrification & Displacement Early-Warning Risk") +
+    tm_layout(legend.outside = TRUE, frame = FALSE)
+} else {
+  risk_map <- tm_shape(panel_results) +
+    tm_fill(
+      col = "displacement_risk",
+      palette = "YlOrRd",
+      style = "quantile",
+      n = 5,
+      showNA = FALSE,
+      title = "Predicted Risk Score\n(Out-of-Fold Probability)"
+    ) +
+    tm_borders(col = "gray40", lwd = 0.5) +
+    tm_layout(
+      main.title = "Hamilton County Gentrification & Displacement Early-Warning Risk",
+      main.title.size = 1.05,
+      legend.outside = TRUE,
+      frame = FALSE
+    )
+}
 
 print(risk_map)
 tmap_save(risk_map, filename = "figures/hamilton_county_risk_map.png", width = 8, height = 5.5, dpi = 300)
 
-# Inspect top 10 highest-risk tracts to verify neighborhood alignment (OTR, West End, Walnut Hills, etc.)
-panel_results %>%
+# Inspect top 10 highest-risk tracts alongside renter share, spatial rent gap, and net unit additions
+top10_tracts <- panel_results %>%
   st_drop_geometry() %>%
   arrange(desc(displacement_risk)) %>%
   select(
-    GEOID, NAME, displacement_risk, gentrified_target,
-    adj_med_inc_14, adj_med_rent_14, rent_gap_14, delta_edu
+    GEOID,
+    NAME,
+    displacement_risk,
+    gentrified_target,
+    renter_share_14,
+    rent_gap_14,
+    net_unit_change,
+    pct_chg_units,
+    delta_edu,
+    supply_profile
   ) %>%
-  head(10) %>%
-  knitr::kable(digits = 3, caption = "Top 10 Highest-Risk Census Tracts in Hamilton County")
+  head(10)
+
+knitr::kable(
+  top10_tracts,
+  digits = 3,
+  caption = "Top 10 Highest-Risk Census Tracts in Hamilton County (with Renter Share & 2014-2022 Supply Diagnostics)"
+)
 ```
 
-The resulting choropleth map (`figures/hamilton_county_risk_map.png`) shows predicted out-of-fold probabilities spanning `0.055` to `0.918`. Highest-quintile risk (`0.561`–`0.918`) is heavily concentrated in Cincinnati's urban core—spanning Over-the-Rhine, Pendleton, the West End, and Walnut Hills—and extends northwest along the Mill Creek / Northside corridor as well as into select eastern and riverfront pockets. Meanwhile, outer suburban tracts across northern, western, and eastern Hamilton County fall predominantly into the lowest risk quintile (`0.055`–`0.107`). In the top-10 diagnostic table, 7 of the 10 highest-scored tracts (`Tracts 10, 9, 17, 42, 264, 70, and 277`) experienced realized gentrification between 2014 and 2022, led by **Census Tract 10** (`0.918` risk score; `+25.0` percentage-point jump in college-educated share), **Census Tract 9** (`0.865`), and **Census Tract 17** (`0.840`; `+21.7` percentage-point education shift).
+The resulting choropleth map (`figures/hamilton_county_risk_map.png`) confirms complete coverage across all modeled tracts (`r missing_scores` missing scores), with out-of-fold probabilities ranging from **`r sprintf("%.3f", min(panel_results$displacement_risk))`** to **`r sprintf("%.3f", max(panel_results$displacement_risk))`**. Highest-quintile risk remains concentrated in Cincinnati's urban core—spanning Over-the-Rhine, Pendleton, the West End, and Walnut Hills—and along the Mill Creek / Northside corridor, while outer suburban tracts across northern, western, and eastern Hamilton County fall predominantly into the lowest risk quintile. Across the top 10 highest-ranked tracts, **`r sum(top10_tracts$gentrified_target)` of 10** experienced realized gentrification between 2014 and 2022, and pairing `renter_share_14` with `net_unit_change` clarifies which high-risk corridors experienced appreciation on stable or shrinking housing stock versus significant infill additions.
 
-# 6. Findings, Limitations, & Next Steps
+# 6. Findings, Limitations, False Positives & Next Steps
 
 ## Key Findings & Takeaways
 
-* **Spatial Context Outperforms Isolated Tract Metrics:** While a tract's own 2014 median income sets the baseline eligibility boundary, neighborhood-level spillover features—especially **Neighbor Vacancy Rate (2014)**, **Neighbor Avg Home Value (2014)**, and **Neighbor Avg Rent (2014)**—rank among the top predictors in the SHAP attribution. Redevelopment pressure rarely occurs in isolation; it radiates outward from high-value adjacent areas into nearby corridors with available vacant housing stock.
-* **Vacancy Acts as a Redevelopment Catalyst:** Both local and neighboring 2014 vacancy rates push predicted displacement risk sharply higher. In older Rust Belt urban cores like Cincinnati, high baseline vacancy combined with proximity to appreciating neighborhoods signals underutilized housing stock ripe for renovation, flipping, or multifamily conversion.
-* **Strong Alignment with Realized Urban Change:** Without ever seeing 2022 data during feature construction, the model places Over-the-Rhine (`Tracts 9, 10, and 17`), East Walnut Hills/Evanston (`Tract 42`), and Madisonville (`Tract 277`) at the top of the risk distribution, capturing 70% precision across the top 10 ranked tracts.
+- **Spatial Context & Tenant Exposure Drive Risk:** While a tract's own 2014 median income sets the baseline eligibility boundary, neighborhood-level spillover features—including neighboring vacancy rates, adjacent home values, and spatial price gaps—combine with local renter-occupied share and housing density to separate dense, renter-heavy urban neighborhoods exposed to displacement from lower-density homeowner suburbs.
+- **Vacancy Acts as a Redevelopment Catalyst:** Elevated local and neighboring 2014 vacancy rates consistently push predicted risk upward. In older Rust Belt urban cores like Cincinnati, high baseline vacancy adjacent to appreciating neighborhoods signals underutilized stock primed for renovation, flipping, or multifamily conversion.
+- **Separating Infill Growth from Displacement Pressure:** Tracking 2014–2022 net housing unit change (`net_unit_change` and `pct_chg_units`) as a post-hoc diagnostic distinguishes neighborhoods where rising rents reflect new multifamily infill on vacant or commercial parcels from neighborhoods where housing costs escalated on flat or contracting stock—a practical distinction for housing policy and tenant-protection targeting.
 
 ## Interpreting Potential False Positives
 
-Three tracts in the top 10—**Census Tract 68** (`0.810` risk, `delta_edu = 0.000`), **Census Tract 71** (`0.791`, `delta_edu = +0.020`), and **Census Tract 22** (`0.736`, `delta_edu = +0.041`)—received high predicted probabilities despite being labeled `gentrified_target = 0`. Rather than simple model failures, these false positives generally fall into three interpretable buckets:
+High-scoring tracts labeled `gentrified_target = 0` in the top 10 generally reflect interpretable urban dynamics rather than random noise:
 
-* **Watch-List / Leading-Indicator Tracts:** Tracts such as Northside (`Tract 71`) or corridors adjacent to rapidly changing neighborhoods share nearly identical baseline income, rent, and spillover profiles with tracts that gentrified between 2014 and 2022. They may represent early-stage or delayed displacement pressure that has not yet crossed the 2022 threshold.
-* **Student & Institutional Churn Effects:** Tracts near universities (such as the Clifton Heights / CUF area around `Tract 22`) exhibit low baseline median incomes and modest rents alongside transient student populations. Because student turnover distorts both income and educational-attainment metrics, university-adjacent tracts can trigger false-positive risk flags without representing classic residential displacement.
-* **Threshold Boundary Artifacts:** Because `gentrified_target` relies on hard percentile cutoffs (e.g., top-30% educational gain), tracts experiencing substantial rent appreciation or demographic turnover just shy of one cutoff are coded as `0`, even when underlying market pressure is elevated.
+- **Watch-List / Leading-Indicator Tracts:** Tracts adjacent to rapidly changing corridors (such as Northside) share nearly identical baseline affordability, renter-share, and spillover profiles with tracts that gentrified between 2014 and 2022, pointing to early-stage or delayed displacement pressure.
+- **Student & Institutional Churn Effects:** Tracts near universities (such as Clifton Heights / CUF) exhibit low baseline incomes, high renter shares, and transient student populations that can mimic displacement risk profiles without representing classic legacy-resident displacement.
+- **Threshold Boundary Artifacts:** Because `gentrified_target` relies on hard percentile cutoffs (top-30% educational gain and above-median rent or home-value growth), tracts experiencing substantial market pressure just shy of one cutoff are coded as `0`.
 
 ## Limitations of the Analysis
 
-* **Small Sample Size:** Modeling a single county yields roughly 220 populated census tracts. Even with shallow trees (`max_depth = 3`, `num_leaves = 7`) and 10x5 repeated cross-validation, probability estimates and SHAP rankings carry higher variance than multi-county or metro-wide datasets.
-* **Proxy Target vs. Direct Displacement:** ACS 5-year estimates capture neighborhood-level demographic and housing-cost shifts rather than individual household out-migration. Rising rents and college-educated shares are standard proxies for gentrification, but they cannot directly distinguish involuntary displacement from new infill construction on previously vacant lots.
-* **Areal Interpolation Error & ACS Margins of Error:** Harmonizing 2010 tracts into 2020 boundaries via land-area weights assumes population and housing are distributed uniformly within split tracts. In addition, 5-year ACS tract estimates carry non-trivial sampling margins of error, particularly in lower-population urban tracts.
-* **Single-Window Historical Calibration:** Because the model is evaluated on a single 2014–2022 cycle (which included post-2020 pandemic housing dynamics), feature weights may partially reflect period-specific market shocks.
+- **Small Sample Size:** Modeling a single county yields roughly 220 populated census tracts. Even with shallow regularized trees (`max_depth = 3`, `num_leaves = 7`) and $10 \times 5$ repeated cross-validation, probability estimates and SHAP rankings carry higher variance than multi-county datasets.
+- **Proxy Target vs. Direct Displacement:** ACS 5-year estimates capture neighborhood-level demographic and cost shifts rather than individual household out-migration. Adding `net_unit_change` diagnostics partially mitigates conflation with infill construction, but parcel-level eviction or migration records are still required to measure involuntary displacement directly.
+- **Areal Interpolation Error & ACS Margins of Error:** Harmonizing 2010 tracts into 2020 boundaries via land-area weights assumes uniform population and housing distribution within split tracts, and 5-year ACS tract estimates carry non-trivial sampling margins of error.
+- **Single-Window Historical Calibration:** Because the model is evaluated on a single 2014–2022 cycle, feature weights may partially reflect period-specific market conditions.
 
 ## Next Steps: Generalizing to Any U.S. County
 
 To evolve this prototype into a reusable, county-agnostic early-warning framework, the following extensions are recommended:
 
-1. **Parameterize Geography & Crosswalks:** Replace hardcoded state (`"OH"`), county (`"Hamilton"`), and FIPS (`"39061"`) strings with R Markdown YAML parameters (`params$state`, `params$county`), dynamically resolving the corresponding state FIPS code and Census 2010–2020 tract relationship URL so the entire report can be re-knit for any U.S. county in one command.
-2. **Scale to Multi-County / Metro-Level Training:** Pool tracts across comparable Midwest or Sun Belt metros (e.g., Columbus, Cleveland, Pittsburgh, Indianapolis) to increase training sample size by 5x–10x, using **Spatial Group K-Fold cross-validation** (holding out entire counties or spatial clusters) to rigorously test out-of-region generalization.
-3. **Incorporate High-Frequency Leading Indicators:** Augment 5-year ACS baselines with parcel-level property assessments, building permit filings, eviction filing rates, and transit-proximity or university-flag features to separate genuine displacement risk from student-housing churn.
-4. **Temporal Forward Validation:** Freeze the model trained on the 2014 $\rightarrow$ 2022 window and score 2018–2022 baseline features forward to generate live 2022 $\rightarrow$ 2030 watch-lists, validating predictions against incoming annual ACS 5-year releases (2023, 2024, and beyond).
+1.  **Parameterize Geography & Crosswalks:** Replace hardcoded state (`"OH"`), county (`"Hamilton"`), and FIPS (`"39061"`) values with R Markdown YAML parameters (`params$state`, `params$county`), dynamically resolving the corresponding state FIPS code and Census 2010–2020 crosswalk URL so the report can be re-knit for any U.S. county.
+2.  **Scale to Multi-County / Metro-Level Training:** Pool tracts across comparable Midwest or Sun Belt metros (e.g., Columbus, Cleveland, Pittsburgh, Indianapolis) to increase training sample size by $5\times$–$10\times$, using **Spatial Group K-Fold cross-validation** to test out-of-region generalization.
+3.  **Add Accessibility & High-Frequency Leading Indicators:** Incorporate distance to downtown and major university campuses (`sf::st_distance`), parcel-level assessments, building permits, and eviction filing rates to cleanly separate student-housing churn from residential displacement.
+4.  **Temporal Forward Validation:** Freeze the model trained on the 2014 $\rightarrow$ 2022 window and score 2018–2022 baseline features forward to generate live 2022 $\rightarrow$ 2030 watch-lists, validating predictions against incoming 2020–2024 and newer ACS 5-year releases.
