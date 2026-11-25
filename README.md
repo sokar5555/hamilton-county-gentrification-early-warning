@@ -1,5 +1,7 @@
 # Demographic Displacement & Gentrification Early-Warning System
 
+## View full report at: https://sokar5555.github.io/hamilton-county-gentrification-early-warning
+
 An end-to-end spatial machine learning pipeline that predicts neighborhood-level gentrification and displacement risk across Hamilton County, Ohio using longitudinal U.S. Census (ACS) data, spatial spillover engineering, and interpretable gradient-boosted trees (`LightGBM` + `SHAP`).
 
 ## Executive Summary
