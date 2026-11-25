@@ -1,0 +1,15 @@
+# Python packages needed for the LightGBM model and SHAP plots
+# Install these before knitting the R Markdown file:
+#   pip install -r requirements.txt
+
+# Data handling and numerical operations
+numpy
+pandas
+
+# Machine learning, cross-validation, and model explainability
+lightgbm
+scikit-learn
+shap
+
+# Saving plots and figures
+matplotlib
