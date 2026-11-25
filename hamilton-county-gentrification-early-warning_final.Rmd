@@ -54,8 +54,10 @@ variables_to_pull <- c(
   med_gross_rent    = "B25064_001", # Median Gross Rent
   med_home_val      = "B25077_001", # Median Home Value
   total_pop         = "B01003_001", # Total Population
+  pop_25_plus       = "B15003_001", # Population 25 Years and Over (education denominator)
   pop_bachelors     = "B15003_022", # Bachelor's Degree
   pop_masters       = "B15003_023", # Master's Degree
+  pop_prof          = "B15003_024", # Professional School Degree
   pop_phd           = "B15003_025", # Doctorate Degree
   pop_white         = "B02001_002", # White alone
   housing_units     = "B25001_001", # Total housing units
@@ -119,8 +121,10 @@ cpi_factor_2014_to_2022 <- 1.258
 df_2014_harmonized <- df_2014_raw %>%
   inner_join(cw_hamilton, by = c("GEOID" = "GEOID_10")) %>%
   mutate(
+    adj_pop_25_plus   = pop_25_plusE       * weight,
     adj_pop_bachelors = pop_bachelorsE     * weight,
     adj_pop_masters   = pop_mastersE       * weight,
+    adj_pop_prof      = pop_profE          * weight,
     adj_pop_phd       = pop_phdE           * weight,
     adj_pop_white     = pop_whiteE         * weight,
     adj_total_pop     = total_popE         * weight,
@@ -133,7 +137,11 @@ df_2014_harmonized <- df_2014_raw %>%
   summarize(
     total_pop_14              = sum(adj_total_pop, na.rm = TRUE),
     housing_units_14          = sum(adj_housing_units, na.rm = TRUE),
-    college_educated_share_14 = sum(adj_pop_bachelors + adj_pop_masters + adj_pop_phd, na.rm = TRUE) / total_pop_14,
+    college_educated_share_14 = if_else(
+      sum(adj_pop_25_plus, na.rm = TRUE) > 0,
+      sum(adj_pop_bachelors + adj_pop_masters + adj_pop_prof + adj_pop_phd, na.rm = TRUE) / sum(adj_pop_25_plus, na.rm = TRUE),
+      NA_real_
+    ),
     pct_white_14              = sum(adj_pop_white, na.rm = TRUE) / total_pop_14,
     vacancy_rate_14           = sum(adj_vacant_units, na.rm = TRUE) / housing_units_14,
     renter_share_14           = if_else(
@@ -152,7 +160,11 @@ df_clean_eval <- df_2022_raw %>%
   mutate(
     total_pop_22              = total_popE,
     housing_units_22          = housing_unitsE,
-    college_educated_share_22 = (pop_bachelorsE + pop_mastersE + pop_phdE) / total_popE,
+    college_educated_share_22 = if_else(
+      pop_25_plusE > 0,
+      (pop_bachelorsE + pop_mastersE + pop_profE + pop_phdE) / pop_25_plusE,
+      NA_real_
+    ),
     pct_white_22              = pop_whiteE / total_popE,
     vacancy_rate_22           = vacant_unitsE / housing_unitsE,
     renter_share_22           = if_else(occ_housing_unitsE > 0, renter_unitsE / occ_housing_unitsE, NA_real_),
@@ -341,7 +353,7 @@ for train_idx, val_idx in rskf.split(X, y):
     X_va = X.iloc[val_idx]
 
     clf = lgb.LGBMClassifier(**lgb_params)
-    clf.fit(X_tr, y_tr)
+    _ = clf.fit(X_tr, y_tr)
 
     oof_preds[val_idx] += clf.predict_proba(X_va)[:, 1] / n_repeats
 
