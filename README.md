@@ -1,8 +1,10 @@
-# Hamilton County Gentrification Early-Warning Model
+# Demographic Displacement & Gentrification Early-Warning System
+
+## View full report at: https://sokar5555.github.io/hamilton-county-gentrification-early-warning
 
 Neighborhood gentrification risk is estimated across all **226 populated Census tracts** in Hamilton County, Ohio. Tract-level probabilities are generated using a gradient-boosted decision tree model (`LGBMClassifier`) trained on baseline demographic, socioeconomic, and housing-supply indicators from the U.S. Census Bureau.
 
-![Hamilton County Gentrification Risk Map](images/hamilton_county_risk_map.png)
+![Hamilton County Gentrification & Displacement Early-Warning Risk](figures/hamilton_county_risk_map.png)
 
 ## Methodology
 
@@ -21,7 +23,6 @@ Neighborhood gentrification risk is estimated across all **226 populated Census 
 | **Predicted Risk Range** | `0.039 – 0.896` |
 | **Top-10 Hit Rate** | `5 / 10` (`Tracts 10, 9, 17, 42, 267`) |
 
-![ROC and Precision-Recall Curves](images/roc_pr_curves.png)
 
 ## Key Insights
 
@@ -30,7 +31,7 @@ Neighborhood gentrification risk is estimated across all **226 populated Census 
   * *Student-housing expansion:* **Tract 22** (Clifton Heights / CUF) recorded the largest unit gain in the top 10 (`+149.1` units / `+10.8%`) alongside a `68.0%` renter share, reflecting purpose-built student housing rather than resident displacement.
   * *Housing-stock contraction:* **Tract 71** (`-244` units / `-11.8%`) and **Tract 254.02** (`-125` units / `-7.2%`) experienced steep unit losses, showing how baseline vulnerability can overlap with disinvestment or demolition rather than market heating.
 
-![Feature Importance and Supply Diagnostics](images/feature_importance.png)
+![SHAP Feature Attribution: Hamilton County Displacement Risk](figures/shap_summary.png)
 
 ### Highlighted Top-10 Diagnostics
 
