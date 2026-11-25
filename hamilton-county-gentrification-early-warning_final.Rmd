@@ -353,7 +353,7 @@ for train_idx, val_idx in rskf.split(X, y):
     X_va = X.iloc[val_idx]
 
     clf = lgb.LGBMClassifier(**lgb_params)
-    _ = clf.fit(X_tr, y_tr)
+    clf = clf.fit(X_tr, y_tr)
 
     oof_preds[val_idx] += clf.predict_proba(X_va)[:, 1] / n_repeats
 
@@ -407,7 +407,7 @@ plt.close()
 knitr::include_graphics("figures/shap_summary.png")
 ```
 
-Across the $10 \times 5$ repeated cross-validation folds, the model achieves an out-of-fold **ROC-AUC of `r sprintf("%.3f", py$roc_auc)`** and a **PR-AUC of `r sprintf("%.3f", py$pr_auc)`** against a **`r sprintf("%.3f", py$baseline_rate)`** baseline positive rate (a **`r sprintf("%.2f", py$pr_lift)`**$\times$ **lift** over random ranking). As shown in `figures/shap_summary.png`, **Median Income (2014)** remains the primary eligibility boundary pushing affluent suburban tracts sharply downward, while neighborhood spillover signals—led by **Neighbor Vacancy Rate (2014)**, **Neighbor Avg Home Value (2014)**, and local/neighboring **Renter-Occupied Share (2014)** and **Housing Density (2014)**—capture urban-core tenant exposure and redevelopment pressure.
+Across the $10 \times 5$ repeated cross-validation folds, the model achieves an out-of-fold **ROC-AUC of `r sprintf("%.3f", py$roc_auc)`** and a **PR-AUC of `r sprintf("%.3f", py$pr_auc)`** against a **`r sprintf("%.3f", py$baseline_rate)`** baseline positive rate (a **`r sprintf("%.2f", py$pr_lift)`**$\times$ **lift** over random ranking). As shown in `figures/shap_summary.png`, **Median Income (2014)** remains the primary eligibility boundary pushing affluent suburban tracts sharply downward, followed by urban-form and spillover signals—led by **Neighbor Renter Share (2014)**, local and neighboring **Housing Density (2014)**, **Median Gross Rent (2014)**, and **Spatial Home Value Gap (Neighbor - Local)**—which capture urban-core tenant exposure and redevelopment pressure.
 
 # 5. Spatial Risk Map & Top-Tract Supply Diagnostics (`tmap`)
 
