@@ -385,7 +385,7 @@ X_display = X.rename(columns=pretty_names)
 
 plt.figure(figsize=(9, 6.8))
 shap.summary_plot(oof_shap, X_display, show=False)
-plt.title("SHAP Feature Attribution: Hamilton County Displacement Risk (v2)", fontsize=12, pad=12)
+plt.title("SHAP Feature Attribution: Hamilton County Displacement Risk", fontsize=12, pad=12)
 plt.tight_layout()
 plt.savefig("figures/shap_summary.png", dpi=300, bbox_inches="tight")
 plt.close()
@@ -395,7 +395,7 @@ plt.close()
 knitr::include_graphics("figures/shap_summary.png")
 ```
 
-Across the $10 \times 5$ repeated cross-validation folds, the v2 model achieves an out-of-fold **ROC-AUC of `r sprintf("%.3f", py$roc_auc)`** and a **PR-AUC of `r sprintf("%.3f", py$pr_auc)`** against a **`r sprintf("%.3f", py$baseline_rate)`** baseline positive rate (a **`r sprintf("%.2f", py$pr_lift)`**$\times$ **lift** over random ranking). As shown in `figures/shap_summary.png`, **Median Income (2014)** remains the primary eligibility boundary pushing affluent suburban tracts sharply downward, while neighborhood spillover signals—led by **Neighbor Vacancy Rate (2014)**, **Neighbor Avg Home Value (2014)**, and local/neighboring **Renter-Occupied Share (2014)** and **Housing Density (2014)**—capture urban-core tenant exposure and redevelopment pressure.
+Across the $10 \times 5$ repeated cross-validation folds, the model achieves an out-of-fold **ROC-AUC of `r sprintf("%.3f", py$roc_auc)`** and a **PR-AUC of `r sprintf("%.3f", py$pr_auc)`** against a **`r sprintf("%.3f", py$baseline_rate)`** baseline positive rate (a **`r sprintf("%.2f", py$pr_lift)`**$\times$ **lift** over random ranking). As shown in `figures/shap_summary.png`, **Median Income (2014)** remains the primary eligibility boundary pushing affluent suburban tracts sharply downward, while neighborhood spillover signals—led by **Neighbor Vacancy Rate (2014)**, **Neighbor Avg Home Value (2014)**, and local/neighboring **Renter-Occupied Share (2014)** and **Housing Density (2014)**—capture urban-core tenant exposure and redevelopment pressure.
 
 # 5. Spatial Risk Map & Top-Tract Supply Diagnostics (`tmap`)
 
